@@ -1,8 +1,11 @@
 mod windows;
 
 fn main() {
-    let platform_state = windows::init();
+    let platform = windows::Platform::init();
+    platform.create_window();
     loop {
-        platform_state.window.process_message();
+        for window in unsafe { &windows::WINDOWS } {
+            window.process_messages();
+        }
     }
 }
