@@ -1,7 +1,6 @@
 use windows::{ core::*, s, Win32::{ Foundation::*, Graphics::Gdi::*, System::LibraryLoader::*, UI::WindowsAndMessaging::*, }, };
-use std::pin::Pin;
 
-pub static mut WINDOWS: Vec<Window> = Vec::new();
+pub static mut WINDOW_STATE: WindowTable = WindowTable::new();
 
 const CLASS_NAME: PCSTR = s!("RGUIWC");
 
@@ -36,12 +35,11 @@ fn instance_handle() -> HINSTANCE {
 #[derive(Debug)]
 pub struct Window {
     pub handle: HWND,
-    // THE PART THAT GETS PASSED TO WINDOWPROC
-    pub state: Pin<Box<State>>,
+    pub state: State,
 }
 
 impl Window {
-    pub fn new(handle: HWND, state: Pin<Box<State>>) -> Self {
+    pub fn new(handle: HWND, state: State) -> Self {
         Self { handle, state }
     }
 
@@ -118,7 +116,7 @@ impl Platform {
 
     pub fn create_window(&self) {
         let window_name = s!("Rust GUI");
-        let state = Pin::new(Box::new(State::default()));
+        let state = State::default();
         let win_handle = unsafe {
             CreateWindowExA(
                 WINDOW_EX_STYLE(0),
@@ -127,19 +125,67 @@ impl Platform {
                 WS_OVERLAPPEDWINDOW | WS_VISIBLE,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
-                state.size.width  as i32,
+                state.size.width   as i32,
                 state.size.height as i32,
                 HWND(0),
                 HMENU(0),
                 self.handle,
                 None,
-                // Some((&state as *const Pin<Box<State>>).cast())
             )
         };
         let window_state = Window::new(win_handle, state);
         unsafe {
-            WINDOWS.push(window_state);
+            WINDOW_STATE.0.push(window_state);
         };
+    }
+
+    pub fn process_all_window_messages() {
+        for window in unsafe { WINDOW_STATE.0 } {
+            window.process_messages();
+        }
+    }
+}
+
+/// 
+struct WindowTable(pub Vec<Window>);
+
+impl WindowTable {
+    pub fn new() -> Self {
+        Self(Vec::new())
+    }
+}
+
+/// used by other layers to access state
+pub struct WindowHandle(HWND);
+
+use std::ops::{Index, IndexMut};
+
+impl Index<WindowHandle> for WindowTable {
+    type Output = Window;
+    fn index(&self, index: WindowHandle) -> &Self::Output {
+        for window in &self.0 {
+            if window.handle.0 == index.0.0 { 
+                return window
+            }
+        }
+        panic!("Index<HWND> for WindowTable failed!")
+    }
+}
+
+impl IndexMut<WindowHandle> for WindowTable {
+    fn index_mut(&mut self, index: WindowHandle) -> &mut Self::Output {
+        for window in &mut self.0 {
+            if window.handle.0 == index.0.0 {
+                return window
+            }
+        }
+        panic!("IndexMut<HWND> for WindowTable failed!")
+    }
+}
+
+impl From<HWND> for WindowHandle {
+    fn from(value: HWND) -> Self {
+        Self(value)
     }
 }
 
@@ -150,30 +196,8 @@ unsafe extern "system" fn window_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     let mut result = LRESULT(0);
-    // searches the static window list for a matching handle
-    // let get_window_state = || {
-    //     use std::time;
-    //     let start = time::Instant::now();
-    //     let mut result = None;
-    //     for window in &mut WINDOWS {
-    //         if window.handle.0 == win_handle.0 {
-    //             result = Some(window)
-    //         }
-    //     }
-    //     let end = start.elapsed();
-    //     println!("Finding window state took {end:?}");
-    //     result
-    // };
-
-    let get_window_state = || {
-        // let mut result = None;
-        let wlp = GetWindowLongPtrA(win_handle, GWLP_USERDATA);
-        if wlp != 0 {
-            let state = (wlp as *const Pin<Box<State>>).read();
-            println!("{state:?}");
-        }
-    };
-    
+    let state = WINDOW_STATE[win_handle.into()];
+    dbg!(state);
     match message {
         // WM_CREATE => {
         //     let create_struct = *std::mem::transmute::<LPARAM, *const CREATESTRUCTA>(lparam);
@@ -201,8 +225,6 @@ unsafe extern "system" fn window_proc(
         // WM_RBUTTONUP   => if let Some(state) = get_window_state() { state.input.mouse.right = false },
         _ => result = DefWindowProcA(win_handle, message, wparam, lparam),
     }
-
-    get_window_state();
 
     result
 }
