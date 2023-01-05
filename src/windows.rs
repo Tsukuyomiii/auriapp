@@ -16,7 +16,7 @@ impl Rect2 {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct Point {
     pub x: u32,
     pub y: u32,
@@ -72,7 +72,7 @@ impl Default for State {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct Mouse {
     /// The current mouse position in screen coordinates.
     pub pos: Point,
@@ -114,7 +114,7 @@ impl Platform {
         Self { handle }
     }
 
-    pub fn create_window(&self) {
+    pub fn create_window(&self) -> WindowHandle {
         let window_name = s!("Rust GUI");
         let state = State::default();
         let win_handle = unsafe {
@@ -125,7 +125,7 @@ impl Platform {
                 WS_OVERLAPPEDWINDOW | WS_VISIBLE,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
-                state.size.width   as i32,
+                state.size.width  as i32,
                 state.size.height as i32,
                 HWND(0),
                 HMENU(0),
@@ -137,49 +137,52 @@ impl Platform {
         unsafe {
             WINDOW_STATE.0.push(window_state);
         };
-    }
-
-    pub fn process_all_window_messages() {
-        for window in unsafe { WINDOW_STATE.0 } {
-            window.process_messages();
-        }
+        WindowHandle(win_handle)
     }
 }
 
-/// 
-struct WindowTable(pub Vec<Window>);
+#[derive(Debug)]
+pub struct WindowTable(pub Vec<Window>);
 
 impl WindowTable {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self(Vec::new())
     }
-}
 
-/// used by other layers to access state
-pub struct WindowHandle(HWND);
-
-use std::ops::{Index, IndexMut};
-
-impl Index<WindowHandle> for WindowTable {
-    type Output = Window;
-    fn index(&self, index: WindowHandle) -> &Self::Output {
+    #[allow(dead_code)]
+    pub fn get_state<'a, T: Into<HWND> + Copy>(&'a self, handle: T) -> Option<&'a Window> {
+        let mut result = None;
         for window in &self.0 {
-            if window.handle.0 == index.0.0 { 
-                return window
+            if window.handle.0 == handle.into().0 {
+                result = Some(window);
             }
-        }
-        panic!("Index<HWND> for WindowTable failed!")
+        };
+        result
+    }
+
+    pub fn get_state_mut<'a, T: Into<HWND> + Copy>(&'a mut self, handle: T) -> Option<&'a mut Window> {
+        let mut result = None;
+        for window in &mut self.0 {
+            if window.handle.0 == handle.into().0 {
+                result = Some(window);
+            }
+        };
+        result
     }
 }
 
-impl IndexMut<WindowHandle> for WindowTable {
-    fn index_mut(&mut self, index: WindowHandle) -> &mut Self::Output {
-        for window in &mut self.0 {
-            if window.handle.0 == index.0.0 {
-                return window
+/// Interface for user to interact with created windows.
+pub struct WindowHandle(HWND);
+
+impl std::ops::Deref for WindowHandle {
+    type Target = Window;
+    fn deref(&self) -> &Self::Target {
+        for window in unsafe { &WINDOW_STATE.0 } {
+            if window.handle.0 == self.0.0 {
+                return window;
             }
         }
-        panic!("IndexMut<HWND> for WindowTable failed!")
+        panic!("Deref<Window> for WindowHandle failed!");
     }
 }
 
@@ -196,35 +199,26 @@ unsafe extern "system" fn window_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     let mut result = LRESULT(0);
-    let state = WINDOW_STATE[win_handle.into()];
-    dbg!(state);
     match message {
-        // WM_CREATE => {
-        //     let create_struct = *std::mem::transmute::<LPARAM, *const CREATESTRUCTA>(lparam);
-        //     println!("createstruct: {create_struct:?}");
-        //     SetWindowLongPtrA(win_handle, GWLP_USERDATA, create_struct.lpCreateParams as isize);
-        // }
-        // WM_MOUSEMOVE => if let Some(state) = get_window_state() {
-        //     // todo: would reading off a raw pointer be faster than byte splitting?
-        //     let lparam_bytes = lparam.0.to_le_bytes();
-        //     let x = std::mem::transmute::<[u8; 2], u16>([lparam_bytes[0], lparam_bytes[1]]);
-        //     let y = std::mem::transmute::<[u8; 2], u16>([lparam_bytes[2], lparam_bytes[3]]);
-        //     state.input.mouse.pos = Point::new(x as u32, y as u32);
-        // }
-        // WM_SIZE => if let Some(state) = get_window_state() {
-        //     let mut rect = RECT::default();
-        //     GetClientRect(win_handle, &mut rect);
-        //     let width = (rect.right - rect.left) as u32;
-        //     let height = (rect.bottom - rect.top) as u32;
-        //     state.size = Rect2::new(width ,height);
-        //     println!("{:?}", state.size);
-        // }
-        // WM_LBUTTONDOWN => if let Some(state) = get_window_state() { state.input.mouse.left  = true  },
-        // WM_LBUTTONUP   => if let Some(state) = get_window_state() { state.input.mouse.left  = false },
-        // WM_RBUTTONDOWN => if let Some(state) = get_window_state() { state.input.mouse.right = true  }
-        // WM_RBUTTONUP   => if let Some(state) = get_window_state() { state.input.mouse.right = false },
+        WM_MOUSEMOVE => if let Some(window) = WINDOW_STATE.get_state_mut(win_handle) {
+            // optimize: would reading off a raw pointer be faster than byte splitting?
+            let lparam_bytes = lparam.0.to_le_bytes();
+            let x = std::mem::transmute::<[u8; 2], u16>([lparam_bytes[0], lparam_bytes[1]]);
+            let y = std::mem::transmute::<[u8; 2], u16>([lparam_bytes[2], lparam_bytes[3]]);
+            window.state.mouse.pos = Point::new(x as u32, y as u32);
+        }
+        WM_SIZE => if let Some(window) = WINDOW_STATE.get_state_mut(win_handle) {
+            let mut rect = RECT::default();
+            GetClientRect(win_handle, &mut rect);
+            let width = rect.right as u32;
+            let height = rect.bottom as u32;
+            window.state.size = Rect2::new(width,height);
+        }
+        WM_LBUTTONDOWN => if let Some(window) = WINDOW_STATE.get_state_mut(win_handle) { window.state.mouse.left  = true },
+        WM_LBUTTONUP   => if let Some(window) = WINDOW_STATE.get_state_mut(win_handle) { window.state.mouse.left  = false },
+        WM_RBUTTONDOWN => if let Some(window) = WINDOW_STATE.get_state_mut(win_handle) { window.state.mouse.right = true },
+        WM_RBUTTONUP   => if let Some(window) = WINDOW_STATE.get_state_mut(win_handle) { window.state.mouse.right = false },
         _ => result = DefWindowProcA(win_handle, message, wparam, lparam),
     }
-
     result
 }

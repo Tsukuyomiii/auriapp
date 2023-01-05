@@ -1,11 +1,11 @@
 mod windows;
+use crate::windows::Platform;
 
 fn main() {
     let platform = windows::Platform::init();
-    platform.create_window();
+    let window = platform.create_window();
     loop {
-        for window in unsafe { &windows::WINDOWS } {
-            window.process_messages();
-        }
+        window.process_messages();
+        println!("{:?}", (*window).state.mouse.pos);
     }
-}
+} 
