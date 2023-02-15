@@ -1,7 +1,7 @@
 #![allow(unused_labels)]
 #![feature(let_chains)]
 
-use windows::{Platform, WindowHandle};
+use windows::{Platform, Window};
 use common::geo::{Vector2, Rect2};
 use graphics::{Bitmap, Pixel};
 
@@ -9,6 +9,44 @@ const WORLD_DIMENSIONS: Rect2 = Rect2::new(20, 20);
 const TILE_COUNT: u32 = WORLD_DIMENSIONS.area();
 
 type Frame = u128;
+
+fn main() {
+    let platform = Platform::init();
+    let mut ui = UI::new(platform.create_window());
+
+    let mut rect = Rectangle::new(
+        Vector2::new(0,0),
+        Rect2::new(300,100),
+    );
+
+    loop {
+        let ui = &mut ui;
+        use std::time::Instant;
+        let time_start = Instant::now();
+
+        let mut elements: Vec<&mut dyn Element> = vec![
+            &mut rect
+        ];
+
+        ui.update(elements.as_mut_slice());
+
+        'frame_timing: {
+            use std::time::Duration;
+            const FPS_TARGET: u32 = 60;
+            const FPS_TARGET_MS: u32 = 1000 / FPS_TARGET;
+            const FPS_DURATION: Duration = Duration::from_millis(FPS_TARGET_MS as u64);
+            if time_start.elapsed().as_millis() > (FPS_TARGET_MS - 3) as u128 {
+                while time_start.elapsed().as_millis() <= FPS_TARGET_MS as u128 {}
+            } else {
+                std::thread::sleep(FPS_DURATION - Duration::from_millis(3));
+                while time_start.elapsed().as_millis() <= FPS_TARGET_MS as u128 {}
+            }
+        }
+
+        ui.render(elements.as_mut_slice());
+
+    }
+}
 
 struct Rectangle {
     pos: Vector2,
@@ -21,7 +59,12 @@ impl Rectangle {
     const DEFAULT_COLOR: RGB = RGB::new(0,0,200);
 
     pub fn new(pos: Vector2, size: Rect2) -> Self {
-        Self { pos, size, color: Self::DEFAULT_COLOR, moving: MovingState::Not }
+        Self {
+            pos,
+            size,
+            color: Self::DEFAULT_COLOR,
+            moving: MovingState::Not
+        }
     }
 
     pub fn point_is_within(&self, point: Vector2) -> bool {
@@ -42,22 +85,22 @@ impl Element for Rectangle {
         self.color = Self::DEFAULT_COLOR;
 
         let UI { mouse, .. } = ui;
-
+        let window = &ui.window;
         'dragging: {
             // if the mouse is dragging...
             if let MouseEvent::Dragging = mouse
             // and the element is not already being moved...
             && let MovingState::Not = self.moving 
             // and the mouse is 'hovering over' the element...
-            && self.point_is_within(ui.window.state.mouse.pos) {
+            && self.point_is_within(window.mouse.pos) {
                 // allow moving to start
-                self.moving = MovingState::InProgress { start_offset: ui.window.state.mouse.pos - self.pos };
+                self.moving = MovingState::InProgress { start_offset: window.mouse.pos - self.pos };
                 break 'dragging;
             }
 
             if let MovingState::InProgress { start_offset: offset } = self.moving {
                 match mouse {
-                    MouseEvent::Dragging => self.pos = ui.window.state.mouse.pos - offset,
+                    MouseEvent::Dragging => self.pos = window.mouse.pos - offset,
                     _ => self.moving = MovingState::Not,
                 };
             }
@@ -118,14 +161,14 @@ impl Element for Rectangle {
     }
 }
 
-struct UI {
-    pub window: WindowHandle,
+struct UI<'p> {
+    pub window: Window<'p>,
     pub frame_counter: Frame,
     pub mouse: MouseEvent,
 }
 
-impl UI {
-    pub fn new(window: WindowHandle) -> Self {
+impl<'p> UI<'p> {
+    pub fn new(window: Window<'p>) -> Self {
         Self {
             window,
             frame_counter: 0,
@@ -142,7 +185,7 @@ impl UI {
             use MouseEvent::*;
             match self.mouse {
                 Not => {
-                    if self.window.state.mouse.left || self.window.state.mouse.right {
+                    if self.window.mouse.left || self.window.mouse.right {
                         self.mouse = Holding(self.frame_counter);
                         println!("-> Holding")
                     }
@@ -152,15 +195,15 @@ impl UI {
                     println!("-> Not")
                 }
                 Holding(frame) => {
-                    if self.window.state.mouse.left || self.window.state.mouse.right {
+                    if self.window.mouse.left || self.window.mouse.right {
                         if frame + 5 <= self.frame_counter {
                             self.mouse = DragStarted;
                             println!("-> DragStarted")
                         }
                     } else {
                         self.mouse = Click {
-                            left:  self.window.state.mouse.left,
-                            right: self.window.state.mouse.right
+                            left:  self.window.mouse.left,
+                            right: self.window.mouse.right
                         };
                         println!("-> Click")
                     }
@@ -170,7 +213,7 @@ impl UI {
                     println!("-> Dragging")
                 }
                 Dragging => {
-                    if !(self.window.state.mouse.left || self.window.state.mouse.right) {
+                    if !(self.window.mouse.left || self.window.mouse.right) {
                         self.mouse = DragEnded;
                         println!("-> DragEnded")
                     }
@@ -188,54 +231,16 @@ impl UI {
         }
         
     }
-
-    pub fn render(&mut self, elements: &mut [&mut dyn Element]) {
-        let mut bitmap = Bitmap::new(self.window.state.size);
+    fn render(&mut self, elements: &mut [&mut dyn Element]) {
+        let window = &self.window;
+        let mut bitmap = Bitmap::new(window.size);
         for element in elements {
             element.render(self, &mut bitmap);
         }
-        self.window.swap_buffers(&bitmap);
+        window.swap_buffers(&bitmap);
     }
 }
 
-fn main() {
-    let platform = Platform::init();
-    let mut ui = UI::new(platform.create_window());
-
-    let mut rect = Rectangle::new(
-        Vector2::new(0,0),
-        Rect2::new(300,100),
-    );
-
-    loop {
-        let ui = &mut ui;
-        use std::time::Instant;
-        let time_start = Instant::now();
-
-        let mut elements: Vec<&mut dyn Element> = vec![
-            &mut rect
-        ];
-        
-        ui.update(elements.as_mut_slice());
-
-        'frame_timing: {
-            use std::time::Duration;
-            const FPS_TARGET: u32 = 60;
-            const FPS_TARGET_MS: u32 = 1000 / FPS_TARGET;
-            const FPS_DURATION: Duration = Duration::from_millis(FPS_TARGET_MS as u64);
-            if time_start.elapsed().as_millis() > (FPS_TARGET_MS - 3) as u128 {
-                while time_start.elapsed().as_millis() <= FPS_TARGET_MS as u128 {}
-            } else {
-                std::thread::sleep(FPS_DURATION - Duration::from_millis(3));
-                while time_start.elapsed().as_millis() <= FPS_TARGET_MS as u128 {}
-            }
-        }
-
-        
-        ui.render(elements.as_mut_slice());
-        
-    }
-}
 
 trait Render {
     fn render(&self, bitmap: &mut Bitmap);
